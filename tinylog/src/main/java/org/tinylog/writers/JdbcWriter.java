@@ -43,7 +43,7 @@ import org.tinylog.LogEntry;
 @PropertiesSupport(name = "jdbc", properties = { @Property(name = "url", type = String.class), @Property(name = "table", type = String.class),
 		@Property(name = "columns", type = String[].class, optional = true), @Property(name = "values", type = String[].class),
 		@Property(name = "batch", type = boolean.class, optional = true), @Property(name = "username", type = String.class, optional = true),
-		@Property(name = "password", type = String.class, optional = true) })
+		@Property(name = "password", type = String.class, optional = true), @Property(name = "reconnect", type = int.class, optional = true) })
 public final class JdbcWriter implements Writer {
 
 	private static final int MAX_BATCH_SIZE = 128;
@@ -57,13 +57,16 @@ public final class JdbcWriter implements Writer {
 	private final boolean batchMode;
 	private final String username;
 	private final String password;
+	private final long timeSpan;
 
 	private final Object lock = new Object();
 
 	private String sql;
-	private Connection connection;
+	private volatile Connection connection;
 	private PreparedStatement batchStatement;
 	private int batchCount;
+
+	private long lostTimestamp;
 
 	/**
 	 * @param url
@@ -74,7 +77,7 @@ public final class JdbcWriter implements Writer {
 	 *            Values to insert
 	 */
 	public JdbcWriter(final String url, final String table, final List<Value> values) {
-		this(url, table, null, values, false, null, null);
+		this(url, table, null, values, false, null, null, -1);
 	}
 
 	/**
@@ -89,7 +92,24 @@ public final class JdbcWriter implements Writer {
 	 *            <code>false</code> to execute SQL statements immediately (default)
 	 */
 	public JdbcWriter(final String url, final String table, final List<Value> values, final boolean batch) {
-		this(url, table, null, values, batch, null, null);
+		this(url, table, null, values, batch, null, null, -1);
+	}
+
+	/**
+	 * @param url
+	 *            JDBC connection URL
+	 * @param table
+	 *            Name of table
+	 * @param values
+	 *            Values to insert
+	 * @param batch
+	 *            <code>true</code> for collecting SQL statements and execute them in a batch process,
+	 *            <code>false</code> to execute SQL statements immediately (default)
+	 * @param reconnect
+	 *            Seconds between reconnecting tries to database if connecting is broken (-1 disables reconnecting)
+	 */
+	public JdbcWriter(final String url, final String table, final List<Value> values, final boolean batch, final int reconnect) {
+		this(url, table, null, values, batch, null, null, reconnect);
 	}
 
 	/**
@@ -105,7 +125,7 @@ public final class JdbcWriter implements Writer {
 	 *            Password for database log in
 	 */
 	public JdbcWriter(final String url, final String table, final List<Value> values, final String username, final String password) {
-		this(url, table, null, values, false, username, password);
+		this(url, table, null, values, false, username, password, -1);
 	}
 
 	/**
@@ -124,7 +144,29 @@ public final class JdbcWriter implements Writer {
 	 *            Password for database log in
 	 */
 	public JdbcWriter(final String url, final String table, final List<Value> values, final boolean batch, final String username, final String password) {
-		this(url, table, null, values, batch, username, password);
+		this(url, table, null, values, batch, username, password, -1);
+	}
+
+	/**
+	 * @param url
+	 *            JDBC connection URL
+	 * @param table
+	 *            Name of table
+	 * @param values
+	 *            Values to insert
+	 * @param batch
+	 *            <code>true</code> for collecting SQL statements and execute them in a batch process,
+	 *            <code>false</code> to execute SQL statements immediately (default)
+	 * @param username
+	 *            User name for database log in
+	 * @param password
+	 *            Password for database log in
+	 * @param reconnect
+	 *            Seconds between reconnecting tries to database if connecting is broken (-1 disables reconnecting)
+	 */
+	public JdbcWriter(final String url, final String table, final List<Value> values, final boolean batch, final String username, final String password,
+			final int reconnect) {
+		this(url, table, null, values, batch, username, password, reconnect);
 	}
 
 	/**
@@ -138,7 +180,7 @@ public final class JdbcWriter implements Writer {
 	 *            Values to insert
 	 */
 	public JdbcWriter(final String url, final String table, final List<String> columns, final List<Value> values) {
-		this(url, table, columns, values, false, null, null);
+		this(url, table, columns, values, false, null, null, -1);
 	}
 
 	/**
@@ -155,7 +197,26 @@ public final class JdbcWriter implements Writer {
 	 *            <code>false</code> to execute SQL statements immediately (default)
 	 */
 	public JdbcWriter(final String url, final String table, final List<String> columns, final List<Value> values, final boolean batch) {
-		this(url, table, columns, values, batch, null, null);
+		this(url, table, columns, values, batch, null, null, -1);
+	}
+
+	/**
+	 * @param url
+	 *            JDBC connection URL
+	 * @param table
+	 *            Name of table
+	 * @param columns
+	 *            Columns of table to use for insert
+	 * @param values
+	 *            Values to insert
+	 * @param batch
+	 *            <code>true</code> for collecting SQL statements and execute them in a batch process,
+	 *            <code>false</code> to execute SQL statements immediately (default)
+	 * @param reconnect
+	 *            Seconds between reconnecting tries to database if connecting is broken (-1 disables reconnecting)
+	 */
+	public JdbcWriter(final String url, final String table, final List<String> columns, final List<Value> values, final boolean batch, final int reconnect) {
+		this(url, table, columns, values, batch, null, null, reconnect);
 	}
 
 	/**
@@ -173,7 +234,7 @@ public final class JdbcWriter implements Writer {
 	 *            Password for database log in
 	 */
 	public JdbcWriter(final String url, final String table, final List<String> columns, final List<Value> values, final String username, final String password) {
-		this(url, table, columns, values, false, username, password);
+		this(url, table, columns, values, false, username, password, -1);
 	}
 
 	/**
@@ -195,6 +256,30 @@ public final class JdbcWriter implements Writer {
 	 */
 	public JdbcWriter(final String url, final String table, final List<String> columns, final List<Value> values, final boolean batch, final String username,
 			final String password) {
+		this(url, table, columns, values, batch, username, password, -1);
+	}
+
+	/**
+	 * @param url
+	 *            JDBC connection URL
+	 * @param table
+	 *            Name of table
+	 * @param columns
+	 *            Columns of table to use for insert
+	 * @param values
+	 *            Values to insert
+	 * @param batch
+	 *            <code>true</code> for collecting SQL statements and execute them in a batch process,
+	 *            <code>false</code> to execute SQL statements immediately (default)
+	 * @param username
+	 *            User name for database log in
+	 * @param password
+	 *            Password for database log in
+	 * @param reconnect
+	 *            Seconds between reconnecting tries to database if connecting is broken (-1 disables reconnecting)
+	 */
+	public JdbcWriter(final String url, final String table, final List<String> columns, final List<Value> values, final boolean batch, final String username,
+			final String password, final int reconnect) {
 		this.url = url;
 		this.table = table;
 		this.columns = columns;
@@ -203,6 +288,7 @@ public final class JdbcWriter implements Writer {
 		this.batchMode = batch;
 		this.username = username;
 		this.password = password;
+		this.timeSpan = reconnect * 1000L;
 	}
 
 	/**
@@ -220,7 +306,28 @@ public final class JdbcWriter implements Writer {
 	 *            Password for database log in
 	 */
 	JdbcWriter(final String url, final String table, final String[] columns, final String[] values, final String username, final String password) {
-		this(url, table, columns == null ? null : Arrays.asList(columns), renderValues(values), false, username, password);
+		this(url, table, columns == null ? null : Arrays.asList(columns), renderValues(values), false, username, password, -1);
+	}
+
+	/**
+	 * @param url
+	 *            JDBC connection URL
+	 * @param table
+	 *            Name of table
+	 * @param columns
+	 *            Columns of table to use for insert
+	 * @param values
+	 *            Values to insert
+	 * @param username
+	 *            User name for database log in
+	 * @param password
+	 *            Password for database log in
+	 * @param reconnect
+	 *            Seconds between reconnecting tries to database if connecting is broken (-1 disables reconnecting)
+	 */
+	JdbcWriter(final String url, final String table, final String[] columns, final String[] values, final String username, final String password,
+			final int reconnect) {
+		this(url, table, columns == null ? null : Arrays.asList(columns), renderValues(values), false, username, password, reconnect);
 	}
 
 	/**
@@ -242,7 +349,31 @@ public final class JdbcWriter implements Writer {
 	 */
 	JdbcWriter(final String url, final String table, final String[] columns, final String[] values, final boolean batch, final String username,
 			final String password) {
-		this(url, table, columns == null ? null : Arrays.asList(columns), renderValues(values), batch, username, password);
+		this(url, table, columns == null ? null : Arrays.asList(columns), renderValues(values), batch, username, password, -1);
+	}
+
+	/**
+	 * @param url
+	 *            JDBC connection URL
+	 * @param table
+	 *            Name of table
+	 * @param columns
+	 *            Columns of table to use for insert
+	 * @param values
+	 *            Values to insert
+	 * @param batch
+	 *            <code>true</code> for collecting SQL statements and execute them in a batch process,
+	 *            <code>false</code> to execute SQL statements immediately (default)
+	 * @param username
+	 *            User name for database log in
+	 * @param password
+	 *            Password for database log in
+	 * @param reconnect
+	 *            Seconds between reconnecting tries to database if connecting is broken (-1 disables reconnecting)
+	 */
+	JdbcWriter(final String url, final String table, final String[] columns, final String[] values, final boolean batch, final String username,
+			final String password, final int reconnect) {
+		this(url, table, columns == null ? null : Arrays.asList(columns), renderValues(values), batch, username, password, reconnect);
 	}
 
 	/**
@@ -308,6 +439,16 @@ public final class JdbcWriter implements Writer {
 		return password;
 	}
 
+	/**
+	 * Get the minimum time span in milliseconds between reconnecting tries to database if connecting is broken.
+	 * Negative numbers mean that automatically reconnecting is disabled.
+	 *
+	 * @return Milliseconds between reconnecting tries to database if connecting is broken
+	 */
+	public long getReconnetingTimeSpan() {
+		return timeSpan;
+	}
+
 	@Override
 	public Set<LogEntryValue> getRequiredLogEntryValues() {
 		return requiredLogEntryValues;
@@ -315,41 +456,46 @@ public final class JdbcWriter implements Writer {
 
 	@Override
 	public void init(final Configuration configuration) throws SQLException {
-		if (username == null) {
-			connection = DriverManager.getConnection(url);
-		} else {
-			connection = DriverManager.getConnection(url, username, password);
-		}
-
 		if (columns != null && columns.size() != values.size()) {
 			throw new SQLException("Number of columns and values must be equal, but columns = " + columns.size() + " and values = " + values.size());
 		}
 
-		sql = renderSql(connection, table, columns, values);
-
-		if (batchMode) {
-			batchStatement = connection.prepareStatement(sql);
-			batchCount = 0;
-		}
-
+		connect();
 		VMShutdownHook.register(this);
 	}
 
 	@Override
 	public void write(final LogEntry logEntry) throws SQLException {
+		repairConnectionIfBroken();
+
 		if (batchMode) {
 			synchronized (lock) {
-				if (batchCount >= MAX_BATCH_SIZE) {
-					executeBatch();
+				if (connection != null) {
+					try {
+						if (batchCount >= MAX_BATCH_SIZE) {
+							executeBatch();
+						}
+						fillStatement(batchStatement, values, logEntry);
+						batchStatement.addBatch();
+						++batchCount;
+					} catch (SQLException ex) {
+						failed(ex);
+					}
 				}
-				fillStatement(batchStatement, values, logEntry);
-				batchStatement.addBatch();
-				++batchCount;
 			}
 		} else {
-			try (PreparedStatement statement = connection.prepareStatement(sql)) {
-				fillStatement(statement, values, logEntry);
-				statement.executeUpdate();
+			Connection currentConnection = connection;
+			if (currentConnection != null) {
+				try (PreparedStatement statement = connection.prepareStatement(sql)) {
+					fillStatement(statement, values, logEntry);
+					statement.executeUpdate();
+				} catch (SQLException ex) {
+					synchronized (lock) {
+						if (connection == currentConnection) {
+							failed(ex);
+						}
+					}
+				}
 			}
 		}
 	}
@@ -358,7 +504,7 @@ public final class JdbcWriter implements Writer {
 	public void flush() throws SQLException {
 		if (batchMode) {
 			synchronized (lock) {
-				if (batchCount > 0) {
+				if (connection != null && batchCount > 0) {
 					executeBatch();
 				}
 			}
@@ -368,8 +514,13 @@ public final class JdbcWriter implements Writer {
 	@Override
 	public void close() throws SQLException {
 		VMShutdownHook.unregister(this);
-		flush();
-		connection.close();
+
+		synchronized (lock) {
+			if (connection != null) {
+				flush();
+				connection.close();
+			}
+		}
 	}
 
 	private static Set<LogEntryValue> calculateRequiredLogEntryValues(final List<Value> values) {
@@ -645,6 +796,23 @@ public final class JdbcWriter implements Writer {
 		}
 	}
 
+	private void connect() throws SQLException {
+		if (username == null) {
+			connection = DriverManager.getConnection(url);
+		} else {
+			connection = DriverManager.getConnection(url, username, password);
+		}
+
+		if (sql == null) {
+			sql = renderSql(connection, table, columns, values);
+		}
+
+		if (batchMode) {
+			batchStatement = connection.prepareStatement(sql);
+			batchCount = 0;
+		}
+	}
+
 	private void executeBatch() throws SQLException {
 		try {
 			batchStatement.executeBatch();
@@ -652,6 +820,36 @@ public final class JdbcWriter implements Writer {
 			batchStatement.close();
 		} finally {
 			batchStatement = connection.prepareStatement(sql);
+		}
+	}
+
+	private void repairConnectionIfBroken() {
+		if (connection == null && timeSpan >= 0) {
+			synchronized (lock) {
+				if (connection == null && System.currentTimeMillis() >= lostTimestamp + timeSpan) {
+					try {
+						connect();
+						InternalLogger.error("Broken database connection has been reestablished");
+					} catch (SQLException ex) {
+						connection = null;
+						lostTimestamp = System.currentTimeMillis();
+					}
+				}
+			}
+		}
+	}
+
+	private void failed(final SQLException exception) {
+		lostTimestamp = System.currentTimeMillis();
+
+		InternalLogger.error(exception, "Database connection is broken");
+
+		try {
+			connection.close();
+		} catch (SQLException ex) {
+			// Ignore
+		} finally {
+			connection = null;
 		}
 	}
 

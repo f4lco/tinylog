@@ -4,7 +4,7 @@ jdk:
    - oraclejdk8
 
 before_script:
-   -pip install --user codecov
+   - pip install --user codecov
 
 script:
    - mvn clean checkstyle:checkstyle findbugs:findbugs install
@@ -12,4 +12,4 @@ script:
    - mvn clean compile
 
 after_success:
-   -  codecov
+   - codecov
